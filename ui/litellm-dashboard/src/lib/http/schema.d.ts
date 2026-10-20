@@ -74333,6 +74333,7 @@ export interface operations {
                 api_key?: string | null;
                 exclude_team_ids?: string | null;
                 timezone?: number | null;
+                group_by?: "team" | "tag";
             };
             header?: never;
             path?: never;
@@ -74372,6 +74373,7 @@ export interface operations {
                 api_key?: string | null;
                 exclude_team_ids?: string | null;
                 timezone?: number | null;
+                group_by?: "team" | "tag";
             };
             header?: never;
             path?: never;
@@ -74412,6 +74414,7 @@ export interface operations {
                 api_key?: string | null;
                 exclude_team_ids?: string | null;
                 timezone?: number | null;
+                group_by?: "team" | "tag";
             };
             header?: never;
             path?: never;
@@ -74451,6 +74454,7 @@ export interface operations {
                 api_key?: string | null;
                 exclude_team_ids?: string | null;
                 timezone?: number | null;
+                group_by?: "team" | "tag";
             };
             header?: never;
             path?: never;
@@ -74490,6 +74494,7 @@ export interface operations {
                 api_key?: string | null;
                 exclude_team_ids?: string | null;
                 timezone?: number | null;
+                group_by?: "team" | "tag";
             };
             header?: never;
             path?: never;
