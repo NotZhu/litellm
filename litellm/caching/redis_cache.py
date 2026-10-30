@@ -456,10 +456,8 @@ def is_redis_timeout_failure(exc: BaseException) -> bool:
 def is_redis_scripting_unavailable(exc: BaseException) -> bool:
     """True when Redis refused to run a Lua script for this client: an ACL without
     ``@scripting``, or ``EVAL`` renamed away."""
-    try:
-        from redis.exceptions import NoPermissionError, ResponseError
-    except ImportError:
-        return False
+    from redis.exceptions import NoPermissionError, ResponseError
+
     if isinstance(exc, NoPermissionError):
         return "permissions to run" in str(exc)
     return isinstance(exc, ResponseError) and "unknown command" in str(exc).lower()
