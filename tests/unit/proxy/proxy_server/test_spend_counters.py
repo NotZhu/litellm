@@ -33,6 +33,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
+from redis.exceptions import NoPermissionError, ResponseError
 
 import litellm
 import litellm.proxy.proxy_server as ps
@@ -1413,6 +1414,68 @@ async def test_a_redis_failure_while_lifting_a_cold_counter_drops_the_local_copy
         await ps.ensure_spend_counter_initialized(counter_key=counter_key, source_cache_key="customer-1")
 
     assert counters.in_memory_cache.get_cache(key=counter_key) is None
+
+
+class _FakeRedisRefusingScripts(FakeAsyncRedis):
+    def __init__(self, server: FakeServer, refusal: ResponseError) -> None:
+        super().__init__(server=server)
+        self._refusal: Final = refusal
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str | bytes | float) -> bytes | None:
+        raise self._refusal
+
+
+def _cold_start_on(monkeypatch: pytest.MonkeyPatch, redis: FakeAsyncRedis, cached_spend: float) -> None:
+    objects: Final = MagicMock()
+    objects.async_get_cache = AsyncMock(return_value={"spend": cached_spend})
+    monkeypatch.setattr(
+        ps, "spend_counter_cache", DualCache(in_memory_cache=InMemoryCache(), redis_cache=_RedisCacheOnClient(redis))
+    )
+    monkeypatch.setattr(ps, "user_api_key_cache", objects)
+    monkeypatch.setattr(ps, "prisma_client", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal",
+    (
+        NoPermissionError("User noscript has no permissions to run the 'eval' command"),
+        ResponseError("unknown command 'eval', with args beginning with: "),
+    ),
+    ids=("acl-without-scripting", "eval-renamed-away"),
+)
+async def test_a_cold_counter_is_still_seeded_on_a_redis_that_refuses_scripts(
+    monkeypatch: pytest.MonkeyPatch, refusal: ResponseError
+) -> None:
+    redis: Final = _FakeRedisRefusingScripts(FakeServer(), refusal)
+    _cold_start_on(monkeypatch, redis, cached_spend=6.0)
+
+    await ps.ensure_spend_counter_initialized(counter_key="spend:end_user:customer-1", source_cache_key="customer-1")
+
+    assert await redis.get("spend:end_user:customer-1") == b"6"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal",
+    (
+        NoPermissionError("No permissions to access a key"),
+        ResponseError("WRONGTYPE Operation against a key holding the wrong kind of value"),
+    ),
+    ids=("key-outside-the-acl", "wrong-type"),
+)
+async def test_a_lift_refused_for_another_reason_is_raised_instead_of_seeded_by_adding(
+    monkeypatch: pytest.MonkeyPatch, refusal: ResponseError
+) -> None:
+    redis: Final = _FakeRedisRefusingScripts(FakeServer(), refusal)
+    _cold_start_on(monkeypatch, redis, cached_spend=6.0)
+
+    with pytest.raises(type(refusal)):
+        await ps.ensure_spend_counter_initialized(
+            counter_key="spend:end_user:customer-1", source_cache_key="customer-1"
+        )
+
+    assert await redis.get("spend:end_user:customer-1") is None
 
 
 # ---------------------------------------------------------------------------

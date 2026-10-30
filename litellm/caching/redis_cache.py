@@ -453,6 +453,18 @@ def is_redis_timeout_failure(exc: BaseException) -> bool:
     return any(isinstance(link, timeout_types) for link in _explicit_causes(exc))
 
 
+def is_redis_scripting_unavailable(exc: BaseException) -> bool:
+    """True when Redis refused to run a Lua script for this client: an ACL without
+    ``@scripting``, or ``EVAL`` renamed away."""
+    try:
+        from redis.exceptions import NoPermissionError, ResponseError
+    except ImportError:
+        return False
+    if isinstance(exc, NoPermissionError):
+        return "permissions to run" in str(exc)
+    return isinstance(exc, ResponseError) and "unknown command" in str(exc).lower()
+
+
 def _record_swallowed_redis_failure(breaker: RedisCircuitBreaker, exc: BaseException) -> None:
     """Record a Redis failure that the calling method is about to swallow.
 
@@ -1555,9 +1567,36 @@ class RedisCache(BaseCache):
             "return ARGV[1] end "
             "return cur"
         )
-        result = cast(
-            "str | bytes | int | float | None",
-            await _redis_client.eval(lua, 1, key, str(value), str(int(_used_ttl or 0))),
+        start_time: Final = time.time()
+        try:
+            result = cast(
+                "str | bytes | int | float | None",
+                await _redis_client.eval(lua, 1, key, str(value), str(int(_used_ttl or 0))),
+            )
+        except Exception as e:
+            failed_at: Final = time.time()
+            asyncio.create_task(
+                self.service_logger_obj.async_service_failure_hook(  # pyright: ignore[reportUnknownMemberType]  # bare dict in sig
+                    service=ServiceTypes.REDIS,
+                    duration=failed_at - start_time,
+                    error=e,
+                    call_type="async_set_max",
+                    caller=_get_call_stack_info(),
+                    start_time=start_time,
+                    end_time=failed_at,
+                )
+            )
+            raise
+        end_time: Final = time.time()
+        asyncio.create_task(
+            self.service_logger_obj.async_service_success_hook(  # pyright: ignore[reportUnknownMemberType]  # bare dict in sig
+                service=ServiceTypes.REDIS,
+                duration=end_time - start_time,
+                call_type="async_set_max",
+                caller=_get_call_stack_info(),
+                start_time=start_time,
+                end_time=end_time,
+            )
         )
         if result is None:
             return None

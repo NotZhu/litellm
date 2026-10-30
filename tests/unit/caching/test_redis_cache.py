@@ -1697,3 +1697,43 @@ async def test_async_set_cache_pipeline_does_not_format_cached_values_for_loggin
 
     assert _FormatCountingStr.format_calls == 0
     assert pipe.sets == [("k1", '"embedding"', timedelta(seconds=60))]
+
+
+def _cache_reporting_to(service_logger: ServiceLogging) -> RedisCache:
+    with patch(  # test-quality-ok: RedisCache.__init__ builds its client eagerly, with no injection point
+        "litellm._redis.get_redis_client", return_value=MagicMock()
+    ):
+        return RedisCache(host="127.0.0.1", port=6379, service_logger_obj=service_logger)
+
+
+@pytest.mark.asyncio
+async def test_async_set_max_reports_a_failed_script_to_the_redis_failure_metric(redis_no_ping: None):
+    """The cold spend-counter seed runs through this script, so its Redis errors have to keep reaching
+    litellm_redis_failed_requests_total the way they did when the seed was an INCRBYFLOAT."""
+    service_logger: Final = ServiceLogging(mock_testing=True)
+    cache: Final = _cache_reporting_to(service_logger)
+    client: Final = AsyncMock()
+    client.eval.side_effect = OSError("redis unavailable")
+    tasks_before: Final = asyncio.all_tasks()
+
+    with patch.object(cache, "init_async_client", return_value=client):
+        with pytest.raises(OSError, match="redis unavailable"):
+            await cache.async_set_max(key="spend:end_user:customer-1", value=6.0)
+    await asyncio.wait_for(asyncio.gather(*(asyncio.all_tasks() - tasks_before)), timeout=5)
+
+    assert (service_logger.mock_testing_async_success_hook, service_logger.mock_testing_async_failure_hook) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_async_set_max_reports_a_completed_script_to_the_redis_latency_metric(redis_no_ping: None):
+    service_logger: Final = ServiceLogging(mock_testing=True)
+    cache: Final = _cache_reporting_to(service_logger)
+    client: Final = AsyncMock()
+    client.eval.return_value = b"6.0"
+    tasks_before: Final = asyncio.all_tasks()
+
+    with patch.object(cache, "init_async_client", return_value=client):
+        assert await cache.async_set_max(key="spend:end_user:customer-1", value=6.0) == 6.0
+    await asyncio.wait_for(asyncio.gather(*(asyncio.all_tasks() - tasks_before)), timeout=5)
+
+    assert (service_logger.mock_testing_async_success_hook, service_logger.mock_testing_async_failure_hook) == (1, 0)

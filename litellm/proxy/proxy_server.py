@@ -313,7 +313,11 @@ from litellm.caching.redis_batch import (
     active_post_call_redis_batch,
     drain_post_call_redis_batches,
 )
-from litellm.caching.redis_cache import RedisCircuitBreakerOpenError, is_redis_timeout_failure
+from litellm.caching.redis_cache import (
+    RedisCircuitBreakerOpenError,
+    is_redis_scripting_unavailable,
+    is_redis_timeout_failure,
+)
 from litellm.caching.redis_cluster_cache import RedisClusterCache
 from litellm.constants import (
     _REALTIME_BODY_CACHE_SIZE,
@@ -4169,7 +4173,10 @@ async def _lift_spend_counter_cache(counter_key: str, floor: float) -> None:
     if spend_counter_cache.redis_cache is not None:
         try:
             lifted: Final = await spend_counter_cache.redis_cache.async_set_max(key=counter_key, value=floor)
-        except Exception:
+        except Exception as e:
+            if is_redis_scripting_unavailable(e):
+                await increment_spend_counter_cache(counter_key=counter_key, increment=floor)
+                return
             await invalidate_spend_counter(counter_key=counter_key)
             raise
         if lifted is not None:
